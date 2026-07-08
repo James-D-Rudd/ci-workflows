@@ -1,0 +1,103 @@
+name: CodeRabbit Automatic Remediation
+
+on:
+  workflow_call:
+
+jobs:
+  apply-fix:
+    if: github.event.comment.user.login == 'coderabbitai[bot]'
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR Branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Checkout CI scripts repo
+        uses: actions/checkout@v4
+        with:
+          repository: James-D-Rudd/ci-workflows
+          path: ci-workflows
+
+      - name: Checkout Context Files repo
+        uses: actions/checkout@v4
+        with:
+          repository: James-D-Rudd/context-files
+          path: context-files
+
+      - name: Configure Git User
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.1.1
+        with:
+          python-version: '3.11'
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.204
+
+      - name: Run Claude Code Remediation
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          SUGGESTION: ${{ github.event.comment.body }}
+          FILE_PATH: "${{ github.event.comment.path }}"
+          AUTOMATED_CHANGES_FILE: "automation/automated_changes.md"
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:8082"
+          ANTHROPIC_API_KEY: "fake-key"
+          PROMPT_DIR: "context-files/claude/prompts/pr_review/"
+
+
+        run: |
+          export SUGGESTION
+          export ANTHROPIC_BASE_URL
+          export ANTHROPIC_API_KEY
+
+          LLM_INSTRUCTIONS=$(bash ci-workflows/scripts/parse_coderabbit_instructions.sh)
+          echo LLM_INSTRUCTIONS > temp_implement_this.txt
+
+          PROMPT=$(<${PROMPT_DIR}/PROMPT.md)
+          mkdir -p "$(dirname "$AUTOMATED_CHANGES_FILE")"
+
+          mkdir .claude
+          cp "${PROMPT_DIR}/settings.json" ".claude/settings.local.json"
+
+          claude \
+            -p "${PROMPT}" \
+            --add-dir . \
+          | awk '
+            /=== Start of Plan ===/{flag=1;next}
+            /=== End of Plan ===/{flag=0}
+            flag
+          ' >> "$AUTOMATED_CHANGES_FILE"
+
+      - name: Push Changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUTOMATED_CHANGES_FILE: "automation/automated_changes.md"
+        run: |
+          SOURCE_BRANCH="${GITHUB_REF_NAME}"
+          REVIEW_BRANCH="automation-review/${SOURCE_BRANCH//\//-}"
+
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
+
+          git fetch origin
+
+          if git show-ref --verify --quiet "refs/remotes/origin/$REVIEW_BRANCH"; then
+              git checkout "$REVIEW_BRANCH"
+          else
+              git checkout -b "$REVIEW_BRANCH"
+          fi
+
+          git add "$AUTOMATED_CHANGES_FILE"
+          git commit -m "Update automated review"
+
+          git push origin "$REVIEW_BRANCH"
