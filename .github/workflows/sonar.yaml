@@ -30,7 +30,7 @@ jobs:
         run: poetry run pytest --cov=. --cov-report=xml --junitxml=pytest-report.xml
 
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v3.1.0
+        uses: SonarSource/sonarqube-scan-action@v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
